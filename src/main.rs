@@ -8,7 +8,9 @@ use std::convert::TryInto;
 
 fn main() {
     let board = Board::new();
-    println!("Hello, world!");
+    board.print_board();
+    println!("{:?}", board.valid_moves());
+    println!("done");
 }
 
 /// Types of chess pieces and all necessary state
@@ -45,7 +47,7 @@ enum PieceColor {
 
 type Rank = u64;
 
-#[derive(Copy, Debug, Clone)]
+#[derive(Copy, Debug, Clone, Eq, PartialEq)]
 enum File {
     A = 0,
     B = 1,
@@ -88,7 +90,27 @@ fn coord_to_pos(coord: (u64, u64)) -> Position {
 }
 
 fn parse_pos(pos_str: &str) -> Result<Position, ()> {
-    Err(())
+    let chars: Vec<char> = pos_str.chars().collect();
+    if chars.len() != 2 {
+        return Err(());
+    }
+
+    let f = match chars[0] {
+        'a' | 'A' => File::A,
+        'b' | 'B' => File::B,
+        'c' | 'C' => File::C,
+        'd' | 'D' => File::D,
+        'e' | 'E' => File::E,
+        'f' | 'F' => File::F,
+        'g' | 'G' => File::G,
+        'h' | 'H' => File::H,
+        _ => return Err(()),
+    };
+    println!("{:?}", f);
+
+    let r = chars[1].to_digit(10).unwrap() as u64;
+
+    Ok((f, r))
 }
 
 /// An individual chess piece
@@ -118,8 +140,10 @@ struct Board {
     board: Vec<Vec<Option<Piece>>>,
 
     en_passant: Option<Position>,
+    castling_options: (bool, bool, bool, bool), // White then Black, Queen then King
     player: PieceColor,
     cur_turn: u64,
+    halfmove_clock: u64,
 }
 
 impl Board {
@@ -128,15 +152,15 @@ impl Board {
     }
 
     fn from_fen(fen_string: &str) -> Result<Board, ()> {
-        let parts: Vec<&str> = fen_string.split(" ").collect();
+        let parts: Vec<&str> = fen_string.split(' ').collect();
         assert!(parts.len() == 6);
 
         let pieces = parts[0];
         let player = parts[1];
         let _castle_state = parts[2];
         let en_passant = parts[3];
-        let turn = parts[4];
-        let _ = parts[5]; // turns since last capture or pawn move, ignored here
+        let halfmove = parts[4]; // turns since last capture or pawn move, ignored here
+        let turn = parts[5];
 
         // First the pieces
         let mut board: Vec<Vec<Option<Piece>>> = Vec::new();
@@ -199,6 +223,7 @@ impl Board {
         };
 
         // TODO Castling availability
+        let castling_options = (true, true, true, true);
 
         // En passant square
         let en_passant = if en_passant == "-" {
@@ -208,6 +233,7 @@ impl Board {
         };
 
         // TODO halfmove clock
+        let halfmove_clock = halfmove.parse::<u64>().unwrap();
 
         // TODO Full turn number
         let cur_turn = turn.parse::<u64>().unwrap();
@@ -215,8 +241,10 @@ impl Board {
         Ok(Board {
             board,
             en_passant,
+            castling_options,
             player,
             cur_turn,
+            halfmove_clock,
         })
     }
 
@@ -224,79 +252,94 @@ impl Board {
         //self.active_pieces.iter().map(|p| p.possible_moves())
         //let active_pieces = Vec::new();
         let mut possibles = Vec::new();
-        /*
-        for p in self.active_pieces.iter() {
-            let (r, f) = pos_to_coord(p.position);
-            match p.kind {
-                PieceType::Pawn => match p.color {
-                    PieceColor::White => possibles.push((r + 1, f)),
-                    PieceColor::Black => possibles.push((r - 1, f)),
-                },
-                PieceType::Bishop => {
-                    for i in 0..8 {
-                        possibles.push((r + i, f + i));
-                        possibles.push((r + i, f - i));
-                        possibles.push((r - i, f + i));
-                        possibles.push((r - i, f - i));
+
+        let mut r: i64 = 8;
+        let mut f;
+        for row in self.board.iter() {
+            r -= 1;
+            f = -1;
+            for cell in row {
+                f += 1;
+                let (color, kind) = if let Some(p) = cell { p } else { continue };
+
+                if *color != self.player {
+                    continue;
+                }
+                match kind {
+                    PieceType::Pawn => match color {
+                        PieceColor::White => possibles.push((r + 1, f)),
+                        PieceColor::Black => possibles.push((r - 1, f)),
+                    },
+                    PieceType::Bishop => {
+                        for i in 0..8 {
+                            possibles.push((r + i, f + i));
+                            possibles.push((r + i, f - i));
+                            possibles.push((r - i, f + i));
+                            possibles.push((r - i, f - i));
+                        }
                     }
-                }
-                PieceType::Knight => {
-                    possibles.push((r + 2, f + 1));
-                    possibles.push((r + 2, f - 1));
-                    possibles.push((r - 2, f + 1));
-                    possibles.push((r - 2, f - 1));
-                    possibles.push((r + 1, f + 2));
-                    possibles.push((r + 1, f - 2));
-                    possibles.push((r - 1, f + 2));
-                    possibles.push((r - 1, f - 2));
-                }
-                PieceType::Rook => {
-                    for i in 0..8 {
-                        possibles.push((r + i, f));
-                        possibles.push((r - i, f));
-                        possibles.push((r, f + i));
-                        possibles.push((r, f - i));
+                    PieceType::Knight => {
+                        possibles.push((r + 2, f + 1));
+                        possibles.push((r + 2, f - 1));
+                        possibles.push((r - 2, f + 1));
+                        possibles.push((r - 2, f - 1));
+                        possibles.push((r + 1, f + 2));
+                        possibles.push((r + 1, f - 2));
+                        possibles.push((r - 1, f + 2));
+                        possibles.push((r - 1, f - 2));
                     }
-                }
-                PieceType::Queen => {
-                    for i in 0..8 {
+                    PieceType::Rook => {
+                        for i in 0..8 {
+                            possibles.push((r + i, f));
+                            possibles.push((r - i, f));
+                            possibles.push((r, f + i));
+                            possibles.push((r, f - i));
+                        }
+                    }
+                    PieceType::Queen => {
+                        for i in 0..8 {
+                            // diagonals
+                            possibles.push((r + i, f + i));
+                            possibles.push((r + i, f - i));
+                            possibles.push((r - i, f + i));
+                            possibles.push((r - i, f - i));
+
+                            // files and ranks
+                            possibles.push((r + i, f));
+                            possibles.push((r - i, f));
+                            possibles.push((r, f + i));
+                            possibles.push((r, f - i));
+                        }
+                    }
+                    PieceType::King => {
                         // diagonals
-                        possibles.push((r + i, f + i));
-                        possibles.push((r + i, f - i));
-                        possibles.push((r - i, f + i));
-                        possibles.push((r - i, f - i));
+                        possibles.push((r + 1, f + 1));
+                        possibles.push((r + 1, f - 1));
+                        possibles.push((r - 1, f + 1));
+                        possibles.push((r - 1, f - 1));
 
                         // files and ranks
-                        possibles.push((r + i, f));
-                        possibles.push((r - i, f));
-                        possibles.push((r, f + i));
-                        possibles.push((r, f - i));
+                        possibles.push((r + 1, f));
+                        possibles.push((r - 1, f));
+                        possibles.push((r, f + 1));
+                        possibles.push((r, f - 1));
                     }
-                }
-                PieceType::King => {
-                    // diagonals
-                    possibles.push((r + 1, f + 1));
-                    possibles.push((r + 1, f - 1));
-                    possibles.push((r - 1, f + 1));
-                    possibles.push((r - 1, f - 1));
-
-                    // files and ranks
-                    possibles.push((r + 1, f));
-                    possibles.push((r - 1, f));
-                    possibles.push((r, f + 1));
-                    possibles.push((r, f - 1));
                 }
             }
         }
-        */
+
         // Remove off the board moves, make them valid positions
         possibles
             .iter()
             .filter(|c| {
                 let (f, r) = c;
-                *f <= 8 && *r <= 8
+                *r > 0 && *f <= 8 && *r <= 8
             })
-            .map(|c| coord_to_pos(*c))
+            .map(|c| {
+                let (f, r) = c;
+                ((*r as u64), (*r as u64))
+            })
+            .map(|c| coord_to_pos(c))
             .collect()
     }
 
@@ -329,14 +372,63 @@ mod test {
     }
 
     #[test]
-    fn fen_test() {
-        //let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    fn fen_init() {
+        // starting position
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let board = Board::from_fen(start).unwrap();
+        println!("{:#?}", board);
+        board.print_board();
+
+        assert!(board.player == PieceColor::White);
+        assert!(board.cur_turn == 1);
+        assert!(board.halfmove_clock == 0);
+        assert!(board.en_passant.is_none());
+        assert!(board.castling_options == (true, true, true, true));
+    }
+
+    #[test]
+    fn fen_enpassant() {
+        // a few moves in
+        let start = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2";
+        let board = Board::from_fen(start).unwrap();
+        println!("{:#?}", board);
+        board.print_board();
+
+        assert!(board.player == PieceColor::White);
+        assert!(board.cur_turn == 2);
+        assert!(board.halfmove_clock == 0);
+        assert!(board.en_passant.is_some());
+        let (f, r) = board.en_passant.unwrap();
+        assert!(f == File::C);
+        assert!(r == 6);
+        assert!(board.castling_options == (true, true, true, true));
+    }
+
+    #[test]
+    fn fen_black() {
+        // one more
         let start = "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2";
         let board = Board::from_fen(start).unwrap();
         println!("{:#?}", board);
         board.print_board();
         assert!(board.player == PieceColor::Black);
         assert!(board.cur_turn == 2);
-        assert!(false);
+        assert!(board.halfmove_clock == 1);
+        assert!(board.en_passant.is_none());
+        assert!(board.castling_options == (true, true, true, true));
+    }
+
+    #[test]
+    fn fen_nocastle() {
+        // one more
+        let start = "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2";
+        let board = Board::from_fen(start).unwrap();
+        println!("{:#?}", board);
+        board.print_board();
+        assert!(board.player == PieceColor::Black);
+        assert!(board.cur_turn == 2);
+        assert!(board.halfmove_clock == 1);
+        assert!(board.en_passant.is_none());
+        assert!(board.castling_options == (true, true, true, true));
     }
 }
