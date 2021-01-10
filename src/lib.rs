@@ -117,6 +117,25 @@ fn parse_pos(pos_str: &str) -> Result<Position, ()> {
 /// An individual chess piece
 type Piece = (Color, PieceType);
 
+fn to_unicode(p: Piece) -> String {
+    match p {
+        (Color::White, PieceType::Pawn) => "♙",
+        (Color::White, PieceType::Rook) => "♖",
+        (Color::White, PieceType::Bishop) => "♗",
+        (Color::White, PieceType::Knight) => "♘",
+        (Color::White, PieceType::Queen) => "♕",
+        (Color::White, PieceType::King) => "♔",
+        (Color::Black, PieceType::Pawn) => "♟︎",
+        (Color::Black, PieceType::Rook) => "♜",
+        (Color::Black, PieceType::Bishop) => "♝",
+        (Color::Black, PieceType::Knight) => "♞",
+        (Color::Black, PieceType::Queen) => "♛",
+        (Color::Black, PieceType::King) => "♚",
+        _ => "?",
+    }
+    .to_string()
+}
+
 fn to_fen(p: Piece) -> String {
     let (color, kind) = p;
     let s = match kind {
@@ -403,7 +422,8 @@ impl Board {
         for r in 0..=7 {
             for f in 0..=7 {
                 if let Some(p) = self.board[7 - r][f] {
-                    print!("{} ", to_fen(p));
+                    //print!("{} ", to_fen(p));
+                    print!("{} ", to_unicode(p));
                 } else {
                     print!("  ");
                 }
