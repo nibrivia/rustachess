@@ -259,28 +259,51 @@ impl Board {
     fn go_direction(
         self: &Self,
         coord: (usize, usize),
-        toward: (i64, i64),
+        dirs: Vec<(i64, i64)>,
+        max: i64,
         stop_at_piece: bool,
-    ) -> Vec<(i64, i64)> {
+        color: Color,
+    ) -> Vec<(usize, usize)> {
         let (r, c) = coord;
-        let (dr, dc) = toward;
 
         let mut pos = Vec::new();
-        for i in 1..8 {
-            let cur_r = r as i64 + i * dr;
-            let cur_c = c as i64 + i * dc;
+        for (mut dr, mut dc) in dirs {
+            loop {
+                for i in 0..=max {
+                    if i == 0 {
+                        continue;
+                    }
+                    let cur_r = r as i64 + i as i64 * dr;
+                    let cur_c = c as i64 + i as i64 * dc;
 
-            // stop if out of bounds
-            if cur_r > 7 || cur_r < 0 || cur_c > 7 || cur_c < 0 {
-                break;
+                    // stop if out of bounds
+                    if cur_r > 7 || cur_r < 0 || cur_c > 7 || cur_c < 0 {
+                        break;
+                    }
+                    let cur_c = cur_c as usize;
+                    let cur_r = cur_r as usize;
+
+                    // stop if there's a piece and we're not going through
+                    if stop_at_piece && self.board[cur_r][cur_c].is_some() {
+                        if let Some((c, _)) = self.board[cur_r][cur_c] {
+                            if c != color {
+                                pos.push((cur_r, cur_c));
+                            }
+                        }
+                        break;
+                    }
+
+                    pos.push((cur_r, cur_c));
+                }
+                if dc > 0 {
+                    dc = -dc;
+                } else if dr > 0 {
+                    dr = -dr;
+                    dc = -dc;
+                } else {
+                    break;
+                }
             }
-
-            // stop if there's a piece and we're not going through
-            if stop_at_piece && self.board[cur_r as usize][cur_c as usize].is_some() {
-                break;
-            }
-
-            pos.push((cur_r, cur_c));
         }
         pos
     }
@@ -289,6 +312,11 @@ impl Board {
     pub fn do_move(self: &mut Self, piece: Piece, from: Position, to: Position) -> Result<(), ()> {
         let (from_row, from_col) = pos_to_coord(from);
         let (to_row, to_col) = pos_to_coord(to);
+
+        let valids = self.valid_moves();
+        let pv = valids.get(&(piece, from)).unwrap();
+        assert!(pv.iter().position(|x| *x == to).is_some());
+
         if let Some(p) = self.board[from_row][from_col] {
             if p != piece {
                 return Err(());
@@ -299,6 +327,11 @@ impl Board {
 
         self.board[from_row][from_col] = None;
         self.board[to_row][to_col] = Some(piece);
+
+        self.player = match self.player {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        };
 
         Ok(())
     }
@@ -312,91 +345,47 @@ impl Board {
         for (piece, pos) in self.cell_pieces() {
             let coord = pos_to_coord(pos);
             let (row, col) = coord;
-            let row = row as i64;
-            let col = col as i64;
             let (color, kind) = piece;
 
             if color != self.player {
                 continue;
             }
 
-            let mut possibles: Vec<(i64, i64)> = Vec::new();
-            match kind {
-                PieceType::Pawn => match color {
-                    Color::White => {
-                        possibles.push((col, row + 1));
-                        if row == 1 {
-                            possibles.push((col, row + 2))
+            let possibles: Vec<(usize, usize)> = match kind {
+                PieceType::Pawn => {
+                    let mut p: Vec<(usize, usize)> = Vec::new();
+                    match color {
+                        Color::White => {
+                            p.push((row + 1, col));
+                            if row == 1 {
+                                p.push((row + 2, col))
+                            }
+                        }
+                        Color::Black => {
+                            p.push((row - 1, col));
+                            if row == 6 {
+                                p.push((row - 2, col));
+                            }
                         }
                     }
-                    Color::Black => {
-                        possibles.push((col, row - 1));
-                        if row == 6 {
-                            possibles.push((col, row - 2));
-                        }
-                    }
-                },
-                PieceType::Bishop => {
-                    possibles.extend(self.go_direction(coord, (1, 1), true));
-                    possibles.extend(self.go_direction(coord, (1, -1), true));
-                    possibles.extend(self.go_direction(coord, (-1, 1), true));
-                    possibles.extend(self.go_direction(coord, (-1, -1), true));
+                    p
                 }
-                PieceType::Knight => {
-                    possibles.push((col + 2, row + 1));
-                    possibles.push((col + 2, row - 1));
-                    possibles.push((col - 2, row + 1));
-                    possibles.push((col - 2, row - 1));
-                    possibles.push((col + 1, row + 2));
-                    possibles.push((col + 1, row - 2));
-                    possibles.push((col - 1, row + 2));
-                    possibles.push((col - 1, row - 2));
-                }
-                PieceType::Rook => {
-                    possibles.extend(self.go_direction(coord, (1, 0), true));
-                    possibles.extend(self.go_direction(coord, (-1, 0), true));
-                    possibles.extend(self.go_direction(coord, (0, 1), true));
-                    possibles.extend(self.go_direction(coord, (0, -1), true));
-                }
+                PieceType::Bishop => self.go_direction(coord, vec![(1, 1)], 8, true, color),
+                PieceType::Knight => self.go_direction(coord, vec![(2, 1), (1, 2)], 1, true, color),
+                PieceType::Rook => self.go_direction(coord, vec![(1, 0), (0, 1)], 8, true, color),
                 PieceType::Queen => {
-                    possibles.extend(self.go_direction(coord, (1, 1), true));
-                    possibles.extend(self.go_direction(coord, (1, -1), true));
-                    possibles.extend(self.go_direction(coord, (-1, 1), true));
-                    possibles.extend(self.go_direction(coord, (-1, -1), true));
-
-                    possibles.extend(self.go_direction(coord, (1, 0), true));
-                    possibles.extend(self.go_direction(coord, (-1, 0), true));
-                    possibles.extend(self.go_direction(coord, (0, 1), true));
-                    possibles.extend(self.go_direction(coord, (0, -1), true));
+                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1), (1, -1)], 8, true, color)
                 }
                 PieceType::King => {
-                    // diagonals
-                    possibles.push((col + 1, row + 1));
-                    possibles.push((col + 1, row - 1));
-                    possibles.push((col - 1, row + 1));
-                    possibles.push((col - 1, row - 1));
-
-                    // coliles and rowanks
-                    possibles.push((col + 1, row));
-                    possibles.push((col - 1, row));
-                    possibles.push((col, row + 1));
-                    possibles.push((col, row - 1));
+                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1), (1, -1)], 1, true, color)
                 }
-            }
+            };
             // Remove off the board moves, make them valid positions
             let possibles = possibles
                 .iter()
-                .filter(|c| {
-                    let (row, col) = c;
-                    *row >= 0 && *col >= 0 && *row < 8 && *col < 8
-                })
                 .map(|c| {
                     let (r, c) = c;
-                    (*r, *c)
-                })
-                .map(|c| {
-                    let (r, c) = c;
-                    coord_to_pos(r as usize, c as usize)
+                    coord_to_pos(*r as usize, *c as usize)
                 })
                 .collect();
 
@@ -433,7 +422,6 @@ impl Board {
                 }
             }
         }
-        println!("{:?}", pieces);
         pieces
     }
 }
