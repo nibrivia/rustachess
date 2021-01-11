@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
+use std::ops::Not;
 
 /// Types of chess pieces and all necessary state
 #[derive(Copy, Debug, Clone, PartialEq, Eq, Hash)]
@@ -36,6 +37,17 @@ pub enum Color {
 
     /// Black
     Black,
+}
+
+impl Not for Color {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        }
+    }
 }
 
 type Rank = u64;
@@ -155,10 +167,60 @@ pub fn to_fen(p: Piece) -> String {
     }
 }
 
+/// Describes check, checkmate, or not
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum Checkstate {
+    /// No check
+    Normal,
+
+    /// Check
+    Check,
+
+    /// Checkmate
+    Checkmate,
+}
+
+#[derive(Debug, Copy, Clone)]
+/// Describes all of the possible pawn moves
+pub enum Pawnmoves {
+    /// First pawn move, results in an en passant square
+    Zoomies(Option<Position>),
+
+    /// Takes en passant on given square
+    TakesEnpassant(Option<Position>),
+
+    /// Promotes to new piece
+    Promotes(Option<Piece>),
+
+    /// Usual forward 1 or diagonal takes
+    Normal,
+}
+
+/// Encodes everything needed for a single move
+#[derive(Debug, Copy, Clone)]
+pub struct Move {
+    /// Initial piece position
+    from: Position,
+
+    /// Final piece position
+    to: Position,
+
+    /// Is a piece taken?
+    takes: bool,
+
+    /// If pawn, what kind of move is it
+    pawnmove: Option<Pawnmoves>,
+
+    /// Final state
+    checkstate: Checkstate,
+}
+
 /// Board object, represents the current board layout
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Board {
     board: Vec<Vec<Option<Piece>>>,
+
+    history: Vec<Move>,
 
     en_passant: Option<Position>,
     castling_options: (bool, bool, bool, bool), // White then Black, Queen then King
@@ -268,6 +330,7 @@ impl Board {
 
         Ok(Board {
             board,
+            history: Vec::new(),
             en_passant,
             castling_options,
             player,
@@ -288,11 +351,9 @@ impl Board {
 
         let mut pos = Vec::new();
         for (mut dr, mut dc) in dirs {
+            // iterates through all +/- directions
             loop {
-                for i in 0..=max {
-                    if i == 0 {
-                        continue;
-                    }
+                for i in 1..=max {
                     let cur_r = r as i64 + i as i64 * dr;
                     let cur_c = c as i64 + i as i64 * dc;
 
@@ -315,6 +376,8 @@ impl Board {
 
                     pos.push((cur_r, cur_c));
                 }
+
+                // slightly hacky, but iterates through all +/- combos
                 if dc > 0 {
                     dc = -dc;
                 } else if dr > 0 {
@@ -328,12 +391,37 @@ impl Board {
         pos
     }
 
+    /// Returns all the positions where such piece can be found
+    pub fn whereis(self: &Self, piece: Piece) -> Vec<Position> {
+        let mut positions = Vec::new();
+        for (p, pos) in self.cell_pieces() {
+            if p == piece {
+                positions.push(pos);
+            }
+        }
+        positions
+    }
+
+    /// Returns the current check(mate)/not state
+    pub fn checkstate(self: &Self) -> Checkstate {
+        let &king_pos = self.whereis((self.player, PieceType::King)).get(0).unwrap();
+        // TODO checkmate
+        for (_p, moves) in self.valid_moves(!self.player) {
+            for dest in moves {
+                if dest == king_pos {
+                    return Checkstate::Check;
+                }
+            }
+        }
+        Checkstate::Normal
+    }
+
     /// Does the specified move
     pub fn do_move(self: &mut Self, piece: Piece, from: Position, to: Position) -> Result<(), ()> {
         let (from_row, from_col) = pos_to_coord(from);
         let (to_row, to_col) = pos_to_coord(to);
 
-        let valids = self.valid_moves();
+        let valids = self.cur_moves();
         let pv = valids.get(&(piece, from)).unwrap();
         assert!(pv.iter().any(|x| *x == to));
 
@@ -348,12 +436,9 @@ impl Board {
         self.board[from_row][from_col] = None;
         self.board[to_row][to_col] = Some(piece);
 
-        self.player = match self.player {
-            Color::White => Color::Black,
-            Color::Black => Color::White,
-        };
+        self.player = !self.player;
 
-        // TODO en passant
+        // TODO en passant square
         // TODO promotion
         // TODO halfclock
         // TODO turn count
@@ -362,8 +447,14 @@ impl Board {
         Ok(())
     }
 
-    /// Lists all currently valid-ish moves
-    pub fn valid_moves(self: &Self) -> HashMap<(Piece, Position), Vec<Position>> {
+    /// List the moves available to the current player
+    pub fn cur_moves(self: &Self) -> HashMap<(Piece, Position), Vec<Position>> {
+        self.valid_moves(self.player)
+    }
+
+    /// Lists all currently valid moves for each player.
+    /// If the player is not the current player, should do less checks. Useful for premoves?
+    pub fn valid_moves(self: &Self, player: Color) -> HashMap<(Piece, Position), Vec<Position>> {
         //self.active_pieces.iter().map(|p| p.possible_moves())
         //let active_pieces = Vec::new();
         let mut all_moves = HashMap::new();
@@ -373,7 +464,7 @@ impl Board {
             let (row, col) = coord;
             let (color, kind) = piece;
 
-            if color != self.player {
+            if color != player {
                 continue;
             }
 
@@ -424,7 +515,7 @@ impl Board {
                     self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 1, true, color)
                 }
             };
-            // Remove off the board moves, make them valid positions
+            // coord -> positions
             let possibles = possibles
                 .iter()
                 .map(|c| {
@@ -447,8 +538,8 @@ impl Board {
         for r in 0..=7 {
             for f in 0..=7 {
                 if let Some(p) = self.board[7 - r][f] {
-                    //print!("{} ", to_fen(p));
-                    print!("{} ", to_unicode(p));
+                    print!("{} ", to_fen(p));
+                //print!("{} ", to_unicode(p));
                 } else {
                     print!("  ");
                 }
@@ -548,5 +639,183 @@ mod test {
         assert!(board.halfmove_clock == 1);
         assert!(board.en_passant.is_none());
         assert!(board.castling_options == (true, true, true, true));
+    }
+
+    #[test]
+    fn scholars_mate() {
+        let mut board = Board::new();
+        print!("1.  e4 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::E, 4))
+            .unwrap();
+
+        println!(" e5");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::E, 7), (File::E, 5))
+            .unwrap();
+
+        print!("2. Bc3 ");
+        board
+            .do_move(
+                (Color::White, PieceType::Bishop),
+                (File::F, 1),
+                (File::C, 4),
+            )
+            .unwrap();
+
+        println!("Nc6");
+        board
+            .do_move(
+                (Color::Black, PieceType::Knight),
+                (File::B, 8),
+                (File::C, 6),
+            )
+            .unwrap();
+
+        print!("3. Qh5 ");
+        board
+            .do_move((Color::White, PieceType::Queen), (File::D, 1), (File::H, 5))
+            .unwrap();
+
+        println!("Nf6");
+        board
+            .do_move(
+                (Color::Black, PieceType::Knight),
+                (File::G, 8),
+                (File::F, 6),
+            )
+            .unwrap();
+
+        print!("4. Qf7#");
+        board
+            .do_move((Color::White, PieceType::Queen), (File::H, 5), (File::F, 7))
+            .unwrap();
+
+        assert!(board.checkstate() == Checkstate::Checkmate);
+    }
+
+    #[test]
+    fn en_passant() {
+        let mut board = Board::new();
+
+        print!("1. e4 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::E, 4))
+            .unwrap();
+
+        println!("d5");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::D, 7), (File::D, 5))
+            .unwrap();
+
+        print!("2. e5 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::E, 4), (File::E, 5))
+            .unwrap();
+
+        println!("f5");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::F, 7), (File::F, 5))
+            .unwrap();
+
+        print!("3. exf6 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::E, 5), (File::F, 6))
+            .unwrap();
+    }
+
+    #[test]
+    fn takes_and_checks() {
+        // A silly game that has takes and pawn takes from both sides
+        let mut board = Board::new();
+        print!("1.  e4 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::E, 4))
+            .unwrap();
+
+        println!("Nf6");
+        board
+            .do_move(
+                (Color::Black, PieceType::Knight),
+                (File::G, 8),
+                (File::F, 6),
+            )
+            .unwrap();
+
+        print!("2.  d3 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::D, 2), (File::D, 3))
+            .unwrap();
+
+        println!("Nxe4");
+        board
+            .do_move(
+                (Color::Black, PieceType::Knight),
+                (File::F, 6),
+                (File::E, 4),
+            )
+            .unwrap();
+
+        print!("3.dxe4 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::D, 3), (File::E, 4))
+            .unwrap();
+
+        println!(" f5");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::F, 7), (File::F, 5))
+            .unwrap();
+
+        print!("4. Qd5 ");
+        board
+            .do_move((Color::White, PieceType::Queen), (File::D, 1), (File::D, 5))
+            .unwrap();
+
+        println!("fxe4");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::F, 5), (File::E, 4))
+            .unwrap();
+
+        print!("5. Qh5+");
+        board
+            .do_move((Color::White, PieceType::Queen), (File::D, 5), (File::H, 5))
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Check);
+
+        println!("  g6");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::G, 7), (File::G, 6))
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Normal);
+
+        print!("6. Qe5 ");
+        board
+            .do_move((Color::White, PieceType::Queen), (File::H, 5), (File::E, 5))
+            .unwrap();
+
+        println!("  e6");
+        board
+            .do_move((Color::Black, PieceType::Pawn), (File::E, 7), (File::E, 6))
+            .unwrap();
+
+        print!("7. Bh6 ");
+        board
+            .do_move(
+                (Color::White, PieceType::Bishop),
+                (File::C, 1),
+                (File::H, 6),
+            )
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Normal);
+
+        println!(" Bb4+");
+        board
+            .do_move(
+                (Color::Black, PieceType::Bishop),
+                (File::F, 8),
+                (File::B, 4),
+            )
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Check);
     }
 }
