@@ -443,12 +443,7 @@ impl Board {
     }
 
     //fn will_be_check(self: &Self, mv: Move) -> Result<bool, MoveError> {
-    fn will_be_check(
-        self: &Self,
-        piece: Piece,
-        from: Position,
-        to: Position,
-    ) -> Result<bool, MoveError> {
+    fn will_be_check(self: &Self, piece: Piece, from: Position, to: Position) -> bool {
         let mut new_board = self.clone();
         //new_board.do_move(mv.piece, mv.from, mv.to)?;
         let mv = Move {
@@ -461,8 +456,7 @@ impl Board {
         };
 
         new_board._do_move_unchecked(mv);
-        let res = new_board.is_atleast_check(self.player);
-        return Ok(res);
+        return new_board.is_atleast_check(self.player);
     }
 
     fn is_atleast_check(self: &Self, color: Color) -> bool {
@@ -501,14 +495,49 @@ impl Board {
             return Some(MoveError::WrongPlayer);
         }
 
+        // Source checks
         let (from_row, from_col) = pos_to_coord(mv.from);
-        //let (to_row, to_col) = pos_to_coord(mv.to);
         if let Some(p) = self.board[from_row][from_col] {
             if p != mv.piece {
                 return Some(MoveError::WrongPiece);
             }
         } else {
             return Some(MoveError::PieceNotFound);
+        }
+
+        // Destination checks
+        let (to_row, to_col) = pos_to_coord(mv.to);
+        if let Some((c, _)) = self.board[to_row][to_col] {
+            if c == self.player {
+                return Some(MoveError::Cannibalism);
+            }
+        }
+
+        if self.will_be_check(mv.piece, mv.from, mv.to) {
+            if self.is_atleast_check(self.player) {
+                return Some(MoveError::StaysInCheck);
+            } else {
+                return Some(MoveError::PutsInCheck);
+            }
+        }
+
+        let moves = self.valid_moves(self.player, false, false);
+        let movement_check = moves.get(&(mv.piece, mv.from)).unwrap();
+        if !movement_check.iter().any(|x| *x == mv.to) {
+            return Some(MoveError::WrongMovement);
+        }
+
+        let blocks = self.valid_moves(self.player, true, false);
+        let block_check = blocks.get(&(mv.piece, mv.from)).unwrap();
+        if block_check.is_empty() {
+            return Some(MoveError::Bulldozer);
+        }
+
+        // Catch everything else
+        let valids = self.cur_moves();
+        let pv = valids.get(&(mv.piece, mv.from)).unwrap();
+        if !pv.iter().any(|x| *x == mv.to) {
+            return Some(MoveError::Generic);
         }
 
         None
@@ -553,12 +582,6 @@ impl Board {
             return Err(err);
         }
 
-        let valids = self.cur_moves();
-        let pv = valids.get(&(piece, from)).unwrap();
-        if !pv.iter().any(|x| *x == to) {
-            return Err(MoveError::Generic);
-        }
-
         self._do_move_unchecked(mv);
         Ok(())
     }
@@ -594,39 +617,44 @@ impl Board {
             let possibles: Vec<(usize, usize)> = match kind {
                 PieceType::Pawn => {
                     let mut p: Vec<(usize, usize)> = Vec::new();
-                    match color {
-                        // TODO En passant
-                        // TODO Promotion
-                        // TODO check abscence of stuff when moving forward...
-                        Color::White => {
-                            p.push((row + 1, col));
-                            if row == 1 {
-                                p.push((row + 2, col))
-                            }
-                            if row < 7 {
-                                if col > 0 && self.board[row + 1][col - 1].is_some() {
-                                    p.push((row + 1, col - 1));
-                                }
-                                if col < 7 && self.board[row + 1][col + 1].is_some() {
-                                    p.push((row + 1, col + 1));
-                                }
-                            }
-                        }
-                        Color::Black => {
-                            p.push((row - 1, col));
-                            if row == 6 {
-                                p.push((row - 2, col));
-                            }
-                            if row > 0 {
-                                if col > 0 && self.board[row - 1][col - 1].is_some() {
-                                    p.push((row - 1, col - 1));
-                                }
-                                if col < 7 && self.board[row - 1][col + 1].is_some() {
-                                    p.push((row - 1, col + 1));
-                                }
-                            }
+                    let (first_row, promote_row, dir): (i64, i64, i64) = match color {
+                        Color::White => (1, 7, 1),
+                        Color::Black => (6, 0, -1),
+                    };
+                    let irow = row as i64;
+                    let nrow = (irow + dir) as usize;
+                    let nnrow = (irow + 2 * dir) as usize;
+
+                    if irow == promote_row {
+                        panic!("Pawns should never exist on the last row?");
+                    }
+
+                    if let Some(ep_pos) = self.en_passant {
+                        let (ep_row, ep_col) = pos_to_coord(ep_pos);
+                        if ep_row == nrow
+                            && (col > 0 && ep_col == col - 1 || col < 7 && ep_col == col + 1)
+                        {
+                            p.push((ep_row, ep_col));
                         }
                     }
+
+                    // Move forward 1 if empty
+                    if self.board[nrow][col].is_none() {
+                        p.push((nrow, col));
+                        // if on first row, try to move twice
+                        if irow == first_row && (self.board[nnrow][col].is_none()) {
+                            p.push((nnrow, col));
+                        }
+                    }
+
+                    if col > 0 && self.board[nrow][col - 1].is_some() {
+                        p.push((nrow, col - 1));
+                    }
+                    if col < 7 && self.board[nrow][col + 1].is_some() {
+                        p.push((nrow, col + 1));
+                    }
+
+                    // TODO promotion
                     p
                 }
                 PieceType::Bishop => {
@@ -666,9 +694,7 @@ impl Board {
                 })
                 .filter(|&to_pos| {
                     if do_other_checks {
-                        !self
-                            .will_be_check((color, kind), pos, to_pos)
-                            .unwrap_or_else(|_| false)
+                        !self.will_be_check((color, kind), pos, to_pos)
                     } else {
                         true
                     }
@@ -974,6 +1000,28 @@ mod test {
             )
             .unwrap();
         assert!(board.checkstate() == Checkstate::Check);
+
+        print!("8.  c3 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::C, 2), (File::C, 3))
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Normal);
+
+        println!(" Bxc3+");
+        board
+            .do_move(
+                (Color::Black, PieceType::Bishop),
+                (File::B, 4),
+                (File::C, 3),
+            )
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Check);
+
+        print!("9.bxc3 ");
+        board
+            .do_move((Color::White, PieceType::Pawn), (File::B, 2), (File::C, 3))
+            .unwrap();
+        assert!(board.checkstate() == Checkstate::Normal);
     }
 
     #[test]
@@ -981,13 +1029,14 @@ mod test {
         // These are all incorrect moves
         let mut b = Board::new();
 
-        println!("1.  e3e4 ");
+        println!("1.  e2f4 ");
         assert_eq!(
             b.do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::F, 4))
                 .unwrap_err(),
             MoveError::WrongMovement
         );
         assert!(b.cur_turn == 1);
+        assert!(b.player == Color::White);
     }
 
     #[test]
@@ -1002,6 +1051,41 @@ mod test {
             MoveError::Bulldozer
         );
         assert!(b.cur_turn == 1);
+    }
+
+    #[test]
+    fn stuck_pawns() {
+        // These are all incorrect moves
+        let mut b = Board::from_fen("rnbqkbnr/ppp2ppp/8/4pP2/3pP3/8/PPPP2PP/RNBQKBNR w KQkq - 0 4")
+            .unwrap();
+
+        //assert_eq!(
+        b.do_move((Color::White, PieceType::Pawn), (File::E, 4), (File::E, 5))
+            .unwrap_err();
+        //MoveError::WrongMovement
+        //);
+        //assert_eq!(
+        b.do_move((Color::White, PieceType::Pawn), (File::D, 2), (File::D, 4))
+            .unwrap_err();
+        //MoveError::WrongMovement
+        //);
+
+        b.do_move((Color::White, PieceType::Pawn), (File::D, 2), (File::D, 3))
+            .unwrap();
+
+        //assert_eq!(
+        b.do_move((Color::Black, PieceType::Pawn), (File::E, 5), (File::E, 4))
+            .unwrap_err();
+        //MoveError::WrongMovement
+        //);
+        //assert_eq!(
+        b.do_move((Color::Black, PieceType::Pawn), (File::F, 7), (File::F, 5))
+            .unwrap_err();
+        //MoveError::WrongMovement
+        //);
+
+        b.do_move((Color::Black, PieceType::Pawn), (File::F, 7), (File::F, 6))
+            .unwrap();
     }
 
     #[test]
@@ -1051,5 +1135,6 @@ mod test {
 
     // TODO pins, staying in check, ...
     // TODO castling
+    // TODO promotion
     // TODO whereare/whatsat
 }
