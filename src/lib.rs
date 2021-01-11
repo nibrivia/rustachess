@@ -215,6 +215,37 @@ pub struct Move {
     checkstate: Checkstate,
 }
 
+/// All of the reasons a move may not be valid
+#[derive(Debug)]
+pub enum MoveError {
+    /// The wrong player is moving
+    WrongPlayer,
+
+    /// The piece at this position is not the specified one
+    IncorrectPiece,
+
+    /// There is no such piece
+    PieceNotFound,
+
+    /// The piece exists, but cannot move that way
+    InvalidMovement,
+
+    /// Fails to stop a current check
+    StaysInCheck,
+
+    /// Puts self in check (wasn't previously)
+    PutsInCheck,
+
+    /// Move runs through some other piece
+    Bulldozer,
+
+    /// Move takes piece of own color
+    Cannibalism,
+
+    /// Generic error
+    Generic,
+}
+
 /// Board object, represents the current board layout
 #[derive(Debug, Clone)]
 pub struct Board {
@@ -392,7 +423,7 @@ impl Board {
     }
 
     /// Returns all the positions where such piece can be found
-    pub fn whereis(self: &Self, piece: Piece) -> Vec<Position> {
+    pub fn whereare(self: &Self, piece: Piece) -> Vec<Position> {
         let mut positions = Vec::new();
         for (p, pos) in self.cell_pieces() {
             if p == piece {
@@ -402,9 +433,18 @@ impl Board {
         positions
     }
 
+    /// Returns the piece on the given positon
+    pub fn whatsat(self: &Self, position: Position) -> Option<Piece> {
+        let (row, col) = pos_to_coord(position);
+        self.board[row][col]
+    }
+
     /// Returns the current check(mate)/not state
     pub fn checkstate(self: &Self) -> Checkstate {
-        let &king_pos = self.whereis((self.player, PieceType::King)).get(0).unwrap();
+        let &king_pos = self
+            .whereare((self.player, PieceType::King))
+            .get(0)
+            .unwrap();
         // TODO checkmate
         for (_p, moves) in self.valid_moves(!self.player) {
             for dest in moves {
@@ -417,31 +457,46 @@ impl Board {
     }
 
     /// Does the specified move
-    pub fn do_move(self: &mut Self, piece: Piece, from: Position, to: Position) -> Result<(), ()> {
+    pub fn do_move(
+        self: &mut Self,
+        piece: Piece,
+        from: Position,
+        to: Position,
+    ) -> Result<(), MoveError> {
+        // Check player
+        let (color, _) = piece;
+        if color != self.player {
+            return Err(MoveError::WrongPlayer);
+        }
+
         let (from_row, from_col) = pos_to_coord(from);
         let (to_row, to_col) = pos_to_coord(to);
+        if let Some(p) = self.board[from_row][from_col] {
+            if p != piece {
+                return Err(MoveError::IncorrectPiece);
+            }
+        } else {
+            return Err(MoveError::PieceNotFound);
+        }
 
         let valids = self.cur_moves();
         let pv = valids.get(&(piece, from)).unwrap();
-        assert!(pv.iter().any(|x| *x == to));
-
-        if let Some(p) = self.board[from_row][from_col] {
-            if p != piece {
-                return Err(());
-            }
-        } else {
-            return Err(());
+        if !pv.iter().any(|x| *x == to) {
+            return Err(MoveError::Generic);
         }
 
         self.board[from_row][from_col] = None;
         self.board[to_row][to_col] = Some(piece);
 
         self.player = !self.player;
+        if self.player == Color::White {
+            self.cur_turn += 1;
+        }
 
         // TODO en passant square
         // TODO promotion
         // TODO halfclock
-        // TODO turn count
+        // TODO castling
         // TODO history?
 
         Ok(())
@@ -512,6 +567,7 @@ impl Board {
                     self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 8, true, color)
                 }
                 PieceType::King => {
+                    // TODO castling
                     self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 1, true, color)
                 }
             };
@@ -728,11 +784,14 @@ mod test {
     fn takes_and_checks() {
         // A silly game that has takes and pawn takes from both sides
         let mut board = Board::new();
+
+        assert!(board.cur_turn == 1);
         print!("1.  e4 ");
         board
             .do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::E, 4))
             .unwrap();
 
+        assert!(board.cur_turn == 1);
         println!("Nf6");
         board
             .do_move(
@@ -742,11 +801,13 @@ mod test {
             )
             .unwrap();
 
+        assert!(board.cur_turn == 2);
         print!("2.  d3 ");
         board
             .do_move((Color::White, PieceType::Pawn), (File::D, 2), (File::D, 3))
             .unwrap();
 
+        assert!(board.cur_turn == 2);
         println!("Nxe4");
         board
             .do_move(
@@ -782,12 +843,14 @@ mod test {
             .unwrap();
         assert!(board.checkstate() == Checkstate::Check);
 
+        assert_eq!(board.cur_turn, 5);
         println!("  g6");
         board
             .do_move((Color::Black, PieceType::Pawn), (File::G, 7), (File::G, 6))
             .unwrap();
         assert!(board.checkstate() == Checkstate::Normal);
 
+        assert_eq!(board.cur_turn, 6);
         print!("6. Qe5 ");
         board
             .do_move((Color::White, PieceType::Queen), (File::H, 5), (File::E, 5))
@@ -818,4 +881,8 @@ mod test {
             .unwrap();
         assert!(board.checkstate() == Checkstate::Check);
     }
+
+    // TODO ErrorType testing
+    // TODO castling
+    // TODO whereare/whatsat
 }
