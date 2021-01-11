@@ -199,6 +199,9 @@ pub enum Pawnmoves {
 /// Encodes everything needed for a single move
 #[derive(Debug, Copy, Clone)]
 pub struct Move {
+    /// What piece is moving
+    piece: Piece,
+
     /// Initial piece position
     from: Position,
 
@@ -216,19 +219,19 @@ pub struct Move {
 }
 
 /// All of the reasons a move may not be valid
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum MoveError {
     /// The wrong player is moving
     WrongPlayer,
 
     /// The piece at this position is not the specified one
-    IncorrectPiece,
+    WrongPiece,
 
     /// There is no such piece
     PieceNotFound,
 
     /// The piece exists, but cannot move that way
-    InvalidMovement,
+    WrongMovement,
 
     /// Fails to stop a current check
     StaysInCheck,
@@ -439,54 +442,84 @@ impl Board {
         self.board[row][col]
     }
 
-    /// Returns the current check(mate)/not state
-    pub fn checkstate(self: &Self) -> Checkstate {
-        let &king_pos = self
-            .whereare((self.player, PieceType::King))
-            .get(0)
-            .unwrap();
-        // TODO checkmate
-        for (_p, moves) in self.valid_moves(!self.player) {
-            for dest in moves {
-                if dest == king_pos {
-                    return Checkstate::Check;
-                }
-            }
-        }
-        Checkstate::Normal
-    }
-
-    /// Does the specified move
-    pub fn do_move(
-        self: &mut Self,
+    //fn will_be_check(self: &Self, mv: Move) -> Result<bool, MoveError> {
+    fn will_be_check(
+        self: &Self,
         piece: Piece,
         from: Position,
         to: Position,
-    ) -> Result<(), MoveError> {
-        // Check player
-        let (color, _) = piece;
+    ) -> Result<bool, MoveError> {
+        let mut new_board = self.clone();
+        //new_board.do_move(mv.piece, mv.from, mv.to)?;
+        let mv = Move {
+            piece: piece,
+            from: from,
+            to: to,
+            takes: false,
+            pawnmove: None,
+            checkstate: Checkstate::Normal,
+        };
+
+        new_board._do_move_unchecked(mv);
+        let res = new_board.is_atleast_check(self.player);
+        return Ok(res);
+    }
+
+    fn is_atleast_check(self: &Self, color: Color) -> bool {
+        let &king_pos = self.whereare((color, PieceType::King)).get(0).unwrap();
+        // don't do pin/check checks, but do block checks
+        for (_p, moves) in self.valid_moves(!color, true, false) {
+            for dest in moves {
+                if dest == king_pos {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Returns the current check(mate)/not state
+    pub fn checkstate(self: &Self) -> Checkstate {
+        if self.is_atleast_check(self.player) {
+            self.print_board();
+            for (_p, moves) in self.cur_moves() {
+                // if there is *any* valid move
+                if moves.len() > 0 {
+                    return Checkstate::Check;
+                }
+            }
+            self.print_board();
+            Checkstate::Checkmate
+        } else {
+            Checkstate::Normal
+        }
+    }
+
+    fn check_move(self: &Self, mv: Move) -> Option<MoveError> {
+        let (color, _) = mv.piece;
         if color != self.player {
-            return Err(MoveError::WrongPlayer);
+            return Some(MoveError::WrongPlayer);
         }
 
-        let (from_row, from_col) = pos_to_coord(from);
-        let (to_row, to_col) = pos_to_coord(to);
+        let (from_row, from_col) = pos_to_coord(mv.from);
+        //let (to_row, to_col) = pos_to_coord(mv.to);
         if let Some(p) = self.board[from_row][from_col] {
-            if p != piece {
-                return Err(MoveError::IncorrectPiece);
+            if p != mv.piece {
+                return Some(MoveError::WrongPiece);
             }
         } else {
-            return Err(MoveError::PieceNotFound);
+            return Some(MoveError::PieceNotFound);
         }
 
-        let valids = self.cur_moves();
-        let pv = valids.get(&(piece, from)).unwrap();
-        if !pv.iter().any(|x| *x == to) {
-            return Err(MoveError::Generic);
-        }
+        None
+    }
+
+    fn _do_move_unchecked(self: &mut Self, mv: Move) {
+        let (from_row, from_col) = pos_to_coord(mv.from);
+        let (to_row, to_col) = pos_to_coord(mv.to);
 
         self.board[from_row][from_col] = None;
-        self.board[to_row][to_col] = Some(piece);
+        self.board[to_row][to_col] = Some(mv.piece);
 
         self.player = !self.player;
         if self.player == Color::White {
@@ -498,18 +531,53 @@ impl Board {
         // TODO halfclock
         // TODO castling
         // TODO history?
+    }
 
+    /// Does the specified move
+    pub fn do_move(
+        self: &mut Self,
+        piece: Piece,
+        from: Position,
+        to: Position,
+    ) -> Result<(), MoveError> {
+        let mv = Move {
+            piece: piece,
+            from: from,
+            to: to,
+            takes: false,
+            pawnmove: None,
+            checkstate: Checkstate::Normal,
+        };
+        // verify validity of move
+        if let Some(err) = self.check_move(mv) {
+            return Err(err);
+        }
+
+        let valids = self.cur_moves();
+        let pv = valids.get(&(piece, from)).unwrap();
+        if !pv.iter().any(|x| *x == to) {
+            return Err(MoveError::Generic);
+        }
+
+        self._do_move_unchecked(mv);
         Ok(())
     }
 
     /// List the moves available to the current player
     pub fn cur_moves(self: &Self) -> HashMap<(Piece, Position), Vec<Position>> {
-        self.valid_moves(self.player)
+        self.valid_moves(self.player, true, true)
     }
 
     /// Lists all currently valid moves for each player.
     /// If the player is not the current player, should do less checks. Useful for premoves?
-    pub fn valid_moves(self: &Self, player: Color) -> HashMap<(Piece, Position), Vec<Position>> {
+    /// do_block_checks chooses whether to go through pieces or no
+    /// do_other_checks chooses whether to verify all other rules of chess (pins, etc)
+    pub fn valid_moves(
+        self: &Self,
+        player: Color,
+        do_block_checks: bool,
+        do_other_checks: bool,
+    ) -> HashMap<(Piece, Position), Vec<Position>> {
         //self.active_pieces.iter().map(|p| p.possible_moves())
         //let active_pieces = Vec::new();
         let mut all_moves = HashMap::new();
@@ -529,6 +597,7 @@ impl Board {
                     match color {
                         // TODO En passant
                         // TODO Promotion
+                        // TODO check abscence of stuff when moving forward...
                         Color::White => {
                             p.push((row + 1, col));
                             if row == 1 {
@@ -560,17 +629,34 @@ impl Board {
                     }
                     p
                 }
-                PieceType::Bishop => self.go_direction(coord, vec![(1, 1)], 8, true, color),
-                PieceType::Knight => self.go_direction(coord, vec![(2, 1), (1, 2)], 1, true, color),
-                PieceType::Rook => self.go_direction(coord, vec![(1, 0), (0, 1)], 8, true, color),
-                PieceType::Queen => {
-                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 8, true, color)
+                PieceType::Bishop => {
+                    self.go_direction(coord, vec![(1, 1)], 8, do_block_checks, color)
                 }
+                PieceType::Knight => {
+                    self.go_direction(coord, vec![(2, 1), (1, 2)], 1, do_block_checks, color)
+                }
+                PieceType::Rook => {
+                    self.go_direction(coord, vec![(1, 0), (0, 1)], 8, do_block_checks, color)
+                }
+                PieceType::Queen => self.go_direction(
+                    coord,
+                    vec![(1, 0), (0, 1), (1, 1)],
+                    8,
+                    do_block_checks,
+                    color,
+                ),
                 PieceType::King => {
                     // TODO castling
-                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 1, true, color)
+                    self.go_direction(
+                        coord,
+                        vec![(1, 0), (0, 1), (1, 1)],
+                        1,
+                        do_block_checks,
+                        color,
+                    )
                 }
             };
+            //println!("{:?}: {:?}", piece, possibles);
             // coord -> positions
             let possibles = possibles
                 .iter()
@@ -578,12 +664,18 @@ impl Board {
                     let (r, c) = c;
                     coord_to_pos(*r as usize, *c as usize)
                 })
+                .filter(|&to_pos| {
+                    if do_other_checks {
+                        !self
+                            .will_be_check((color, kind), pos, to_pos)
+                            .unwrap_or_else(|_| false)
+                    } else {
+                        true
+                    }
+                })
                 .collect();
 
-            all_moves.insert(
-                ((color, kind), coord_to_pos(row as usize, col as usize)),
-                possibles,
-            );
+            all_moves.insert(((color, kind), pos), possibles);
         }
 
         all_moves
@@ -841,25 +933,27 @@ mod test {
         board
             .do_move((Color::White, PieceType::Queen), (File::D, 5), (File::H, 5))
             .unwrap();
-        assert!(board.checkstate() == Checkstate::Check);
+        assert_eq!(board.checkstate(), Checkstate::Check);
 
         assert_eq!(board.cur_turn, 5);
         println!("  g6");
         board
             .do_move((Color::Black, PieceType::Pawn), (File::G, 7), (File::G, 6))
             .unwrap();
-        assert!(board.checkstate() == Checkstate::Normal);
+        assert_eq!(board.checkstate(), Checkstate::Normal);
 
         assert_eq!(board.cur_turn, 6);
         print!("6. Qe5 ");
         board
             .do_move((Color::White, PieceType::Queen), (File::H, 5), (File::E, 5))
             .unwrap();
+        assert_eq!(board.checkstate(), Checkstate::Normal);
 
         println!("  e6");
         board
             .do_move((Color::Black, PieceType::Pawn), (File::E, 7), (File::E, 6))
             .unwrap();
+        assert_eq!(board.checkstate(), Checkstate::Normal);
 
         print!("7. Bh6 ");
         board
@@ -882,7 +976,80 @@ mod test {
         assert!(board.checkstate() == Checkstate::Check);
     }
 
-    // TODO ErrorType testing
+    #[test]
+    fn wrong_movements() {
+        // These are all incorrect moves
+        let mut b = Board::new();
+
+        println!("1.  e3e4 ");
+        assert_eq!(
+            b.do_move((Color::White, PieceType::Pawn), (File::E, 2), (File::F, 4))
+                .unwrap_err(),
+            MoveError::WrongMovement
+        );
+        assert!(b.cur_turn == 1);
+    }
+
+    #[test]
+    fn bulldozers() {
+        // These are all incorrect moves
+        let mut b = Board::new();
+
+        println!("1. Ra4 ");
+        assert_eq!(
+            b.do_move((Color::White, PieceType::Rook), (File::A, 1), (File::A, 4))
+                .unwrap_err(),
+            MoveError::Bulldozer
+        );
+        assert!(b.cur_turn == 1);
+    }
+
+    #[test]
+    fn cannibalism() {
+        // These are all incorrect moves
+        let mut b = Board::new();
+
+        println!("1. Ra4 ");
+        assert_eq!(
+            b.do_move((Color::White, PieceType::King), (File::E, 1), (File::F, 2))
+                .unwrap_err(),
+            MoveError::Cannibalism
+        );
+        assert!(b.cur_turn == 1);
+    }
+
+    #[test]
+    fn wrong_pieces() {
+        // These are all incorrect moves
+        let mut b = Board::new();
+
+        assert!(b.cur_turn == 1);
+        println!("1.  e3e4 ");
+        assert_eq!(
+            b.do_move((Color::White, PieceType::Pawn), (File::E, 3), (File::E, 4))
+                .unwrap_err(),
+            MoveError::PieceNotFound
+        );
+
+        assert!(b.cur_turn == 1);
+        println!("1.  Qe2e5 ");
+        assert_eq!(
+            b.do_move((Color::White, PieceType::Queen), (File::E, 2), (File::E, 4))
+                .unwrap_err(),
+            MoveError::WrongPiece
+        );
+
+        assert!(b.cur_turn == 1);
+        println!("1.  e7e5 ");
+        assert_eq!(
+            b.do_move((Color::Black, PieceType::Pawn), (File::E, 7), (File::E, 5))
+                .unwrap_err(),
+            MoveError::WrongPlayer
+        );
+        assert!(b.cur_turn == 1);
+    }
+
+    // TODO pins, staying in check, ...
     // TODO castling
     // TODO whereare/whatsat
 }
