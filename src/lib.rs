@@ -353,6 +353,12 @@ impl Board {
             Color::Black => Color::White,
         };
 
+        // TODO en passant
+        // TODO promotion
+        // TODO halfclock
+        // TODO turn count
+        // TODO history?
+
         Ok(())
     }
 
@@ -375,16 +381,34 @@ impl Board {
                 PieceType::Pawn => {
                     let mut p: Vec<(usize, usize)> = Vec::new();
                     match color {
+                        // TODO En passant
+                        // TODO Promotion
                         Color::White => {
                             p.push((row + 1, col));
                             if row == 1 {
                                 p.push((row + 2, col))
+                            }
+                            if row < 7 {
+                                if col > 0 && self.board[row + 1][col - 1].is_some() {
+                                    p.push((row + 1, col - 1));
+                                }
+                                if col < 7 && self.board[row + 1][col + 1].is_some() {
+                                    p.push((row + 1, col + 1));
+                                }
                             }
                         }
                         Color::Black => {
                             p.push((row - 1, col));
                             if row == 6 {
                                 p.push((row - 2, col));
+                            }
+                            if row > 0 {
+                                if col > 0 && self.board[row - 1][col - 1].is_some() {
+                                    p.push((row - 1, col - 1));
+                                }
+                                if col < 7 && self.board[row - 1][col + 1].is_some() {
+                                    p.push((row - 1, col + 1));
+                                }
                             }
                         }
                     }
@@ -394,10 +418,10 @@ impl Board {
                 PieceType::Knight => self.go_direction(coord, vec![(2, 1), (1, 2)], 1, true, color),
                 PieceType::Rook => self.go_direction(coord, vec![(1, 0), (0, 1)], 8, true, color),
                 PieceType::Queen => {
-                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1), (1, -1)], 8, true, color)
+                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 8, true, color)
                 }
                 PieceType::King => {
-                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1), (1, -1)], 1, true, color)
+                    self.go_direction(coord, vec![(1, 0), (0, 1), (1, 1)], 1, true, color)
                 }
             };
             // Remove off the board moves, make them valid positions
