@@ -117,7 +117,8 @@ fn parse_pos(pos_str: &str) -> Result<Position, ()> {
 /// An individual chess piece
 type Piece = (Color, PieceType);
 
-fn to_unicode(p: Piece) -> String {
+/// Translates a piece into its unicode emoji
+pub fn to_unicode(p: Piece) -> String {
     match p {
         (Color::White, PieceType::Pawn) => "♙",
         (Color::White, PieceType::Rook) => "♖",
@@ -131,12 +132,12 @@ fn to_unicode(p: Piece) -> String {
         (Color::Black, PieceType::Knight) => "♞",
         (Color::Black, PieceType::Queen) => "♛",
         (Color::Black, PieceType::King) => "♚",
-        _ => "?",
     }
     .to_string()
 }
 
-fn to_fen(p: Piece) -> String {
+/// Translates a piece into its FEN character
+pub fn to_fen(p: Piece) -> String {
     let (color, kind) = p;
     let s = match kind {
         PieceType::Pawn => "p",
@@ -334,7 +335,7 @@ impl Board {
 
         let valids = self.valid_moves();
         let pv = valids.get(&(piece, from)).unwrap();
-        assert!(pv.iter().position(|x| *x == to).is_some());
+        assert!(pv.iter().any(|x| *x == to));
 
         if let Some(p) = self.board[from_row][from_col] {
             if p != piece {
